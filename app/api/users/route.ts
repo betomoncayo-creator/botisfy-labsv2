@@ -1,49 +1,48 @@
-import { createClient } from '@supabase/supabase-js';
-import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js'
+import { NextResponse } from 'next/server'
 
 export async function POST(request: Request) {
   try {
-    const { email, password, fullName, role } = await request.json();
+    const { email, password, fullName, role } = await request.json()
 
-    // 1. Iniciamos Supabase con la Llave Maestra para saltar bloqueos
+    // 1. Iniciamos Supabase con la Llave Maestra
     const supabaseAdmin = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY! // <-- Aquí usa tu llave secreta
-    );
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    )
 
     // 2. Inyectar usuario en la BÓVEDA SEGURA (auth.users)
-    const { data: authData, error: authError } =
-      await supabaseAdmin.auth.admin.createUser({
-        email: email,
-        password: password,
-        email_confirm: true, // Se auto-confirma para que entre directo
-      });
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+      email: email,
+      password: password,
+      email_confirm: true 
+    })
 
-    if (authError) throw authError;
+    if (authError) throw authError
 
-    // 3. Inyectar usuario en el DIRECTORIO VISUAL (public.profiles)
-    const { error: profileError } = await supabaseAdmin
-      .from('profiles')
-      .insert([
-        {
-          id: authData.user.id,
-          full_name: fullName,
-          role: role,
-          email: email,
-        },
-      ]);
+    // 3. ANTI-CHOQUES: Esperamos 1 segundo para que tu Trigger termine de crear el perfil en blanco
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
+    // 4. UPSERT BLINDADO: Le decimos que si el 'id' ya existe (por el trigger), solo lo actualice
+    const { error: profileError } = await supabaseAdmin.from('profiles').upsert(
+      {
+        id: authData.user.id,
+        full_name: fullName,
+        role: role,
+        email: email
+      },
+      { onConflict: 'id' } // <-- Esta es la regla de oro
+    )
+
+    // Si ocurre un error, hacemos Rollback (borramos de la bóveda para no dejar fantasmas)
     if (profileError) {
-      // Si falla al guardar el perfil, borramos al usuario de la bóveda para no dejar "fantasmas"
-      await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
-      throw profileError;
+      await supabaseAdmin.auth.admin.deleteUser(authData.user.id)
+      throw profileError
     }
 
-    return NextResponse.json({
-      success: true,
-      message: 'Usuario creado y enlazado.',
-    });
+    return NextResponse.json({ success: true, message: 'Usuario vinculado exitosamente.' })
+    
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ error: error.message }, { status: 400 })
   }
 }
